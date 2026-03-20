@@ -696,9 +696,7 @@ if st.session_state.get('docking_results'):
                     #    O PLIP requer openbabel que só funciona até Python 3.11,
                     #    então chamamos o helper plip_runner.py no ambiente compatível.
                     # -------------------------------------------------------
-                    VINA_RDKIT_PYTHON = (
-                        "/Users/carlosseitih.shiraishi/Anaconda/anaconda3/envs/vina-rdkit/bin/python"
-                    )
+                    VINA_RDKIT_PYTHON = sys.executable
                     PLIP_RUNNER = os.path.join(
                         os.path.dirname(os.path.abspath(__file__)), "plip_runner.py"
                     )

@@ -12,3 +12,8 @@ langchain-huggingface
 chromadb
 pypdf
 sentence-transformers
+vina
+beautifulsoup4
+plip
+ipython_genutils
+lxml
