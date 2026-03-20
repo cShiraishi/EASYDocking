@@ -6,17 +6,5 @@ meeko==0.5.0
 py3Dmol
 stmol
 scipy
-langchain
-langchain-community
-langchain-huggingface
-chromadb
-pypdf
-sentence-transformers
 vina
 beautifulsoup4
-plip
-ipython-genutils
-lxml
-openbabel
-prolif
-MDAnalysis

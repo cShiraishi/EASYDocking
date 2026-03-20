@@ -1,9 +1,4 @@
-openbabel
-libopenbabel-dev
-swig
 libxrender1
 libxext6
 build-essential
 python3-dev
-libxml2-dev
-libxslt1-dev
