@@ -8,3 +8,4 @@ stmol
 scipy
 vina
 beautifulsoup4
+ipython-genutils
