@@ -18,3 +18,5 @@ plip
 ipython-genutils
 lxml
 openbabel
+prolif
+MDAnalysis
