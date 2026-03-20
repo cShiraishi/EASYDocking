@@ -15,5 +15,6 @@ sentence-transformers
 vina
 beautifulsoup4
 plip
-ipython_genutils
+ipython-genutils
 lxml
+openbabel-wheel
