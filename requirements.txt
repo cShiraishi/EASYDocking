@@ -17,4 +17,4 @@ beautifulsoup4
 plip
 ipython-genutils
 lxml
-openbabel-wheel
+openbabel
