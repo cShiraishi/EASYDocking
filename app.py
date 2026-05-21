@@ -218,8 +218,31 @@ else:
 # ------------------------------------------------------------------------------
 # STEP 1: PROTEIN INPUT
 # ------------------------------------------------------------------------------
-st.header("1. Upload da Proteína (Receptor)")
-protein_file = st.file_uploader("Carregar arquivo da proteína (.pdbqt ou .pdb)", type=["pdbqt", "pdb"])
+st.header("1. Entrada da Proteína (Receptor)")
+protein_input_method = st.radio("Como deseja fornecer a Proteína?", ["Upload de Arquivo", "Importar do PDB via ID"])
+
+protein_raw_str = None
+protein_name_str = None
+raw_data_bytes = None
+
+if protein_input_method == "Upload de Arquivo":
+    protein_file = st.file_uploader("Carregar arquivo da proteína (.pdbqt ou .pdb)", type=["pdbqt", "pdb"])
+    if protein_file is not None:
+        raw_data_bytes = protein_file.getvalue()
+        protein_raw_str = raw_data_bytes.decode("utf-8")
+        protein_name_str = protein_file.name
+elif protein_input_method == "Importar do PDB via ID":
+    pdb_id_fetch = st.text_input("Digite o PDB ID de 4 letras (ex: 1STP)", max_chars=4).strip().upper()
+    if len(pdb_id_fetch) == 4:
+        with st.spinner(f"Baixando {pdb_id_fetch} do banco de dados PDB..."):
+            pdb_resp = requests.get(f"https://files.rcsb.org/download/{pdb_id_fetch}.pdb")
+            if pdb_resp.ok:
+                protein_raw_str = pdb_resp.text
+                raw_data_bytes = protein_raw_str.encode("utf-8")
+                protein_name_str = f"{pdb_id_fetch}.pdb"
+                st.success(f"Proteína {pdb_id_fetch} baixada com sucesso!")
+            else:
+                st.error("Falha ao baixar do PDB. Verifique se o código está correto e online.")
 
 st.subheader("Opções de Limpeza (Pré-processamento)")
 col_a, col_b = st.columns(2)
@@ -287,10 +310,10 @@ def convert_pdb_to_pdbqt(pdb_content):
         st.error(f"Erro ao executar OpenBabel: {e}")
         return None
 
-def load_protein(protein_file, rm_water, rm_hetatm):
-    if protein_file is not None:
-        string_data = protein_file.getvalue().decode("utf-8")
-        filename = protein_file.name
+def load_protein(protein_raw_str, protein_name_str, rm_water, rm_hetatm):
+    if protein_raw_str is not None:
+        string_data = protein_raw_str
+        filename = protein_name_str
         
         # 0. Limpeza em nível de texto (Text-level cleaning)
         cleaned_lines = []
@@ -322,7 +345,7 @@ def load_protein(protein_file, rm_water, rm_hetatm):
         return string_data, filename
     return None, None
 
-protein_data, protein_name = load_protein(protein_file, remove_water, remove_hetatm)
+protein_data, protein_name = load_protein(protein_raw_str, protein_name_str, remove_water, remove_hetatm)
 
 if protein_data:
     st.success(f"Proteína '{protein_name}' carregada e processada!")
@@ -383,7 +406,7 @@ else:
 # STEP 2: LIGAND INPUT
 # ------------------------------------------------------------------------------
 st.header("2. Entrada de Ligantes")
-input_method = st.radio("Método de Entrada:", ["Lista de SMILES", "Arquivo SDF"])
+input_method = st.radio("Método de Entrada:", ["Lista de SMILES", "Arquivo SDF", "Redocking (Extrair do PDB)"])
 
 ligands_to_dock = []  # List of (name, mol_object)
 
@@ -417,8 +440,87 @@ elif input_method == "Arquivo SDF":
                 ligands_to_dock.append((name, mol))
         os.unlink(t_sdf.name)
 
+elif input_method == "Redocking (Extrair do PDB)":
+    st.info("Esta opção utiliza o ligante original presente no arquivo da proteína carregada na Etapa 1. O arquivo original (antes da limpeza) será usado para extrair o ligante e servirá como única entrada para o docking.")
+    ligand_resname = st.text_input("Código de 3 letras do Ligante no PDB (Ex: LIG, UNL, STI)", value="").strip().upper()
+    
+    if 'raw_data_bytes' in locals() and raw_data_bytes is not None:
+        raw_data = raw_data_bytes.decode("utf-8")
+        if ligand_resname:
+            ligand_lines = []
+            for line in raw_data.splitlines():
+                if (line.startswith("HETATM") or line.startswith("ATOM")) and line[17:20].strip() == ligand_resname:
+                    ligand_lines.append(line)
+            
+            if ligand_lines:
+                ligand_pdb_block = "\n".join(ligand_lines)
+                
+                with tempfile.NamedTemporaryFile(suffix=".pdb", mode="w", delete=False) as tmp_in:
+                    tmp_in.write(ligand_pdb_block)
+                    tmp_in_path = tmp_in.name
+                    
+                tmp_out_path = tmp_in_path.replace(".pdb", ".sdf")
+                cmd = ["obabel", "-ipdb", tmp_in_path, "-osdf", "-O", tmp_out_path, "-h"]
+                subprocess.run(cmd, capture_output=True)
+                
+                if os.path.exists(tmp_out_path):
+                    suppl = Chem.SDMolSupplier(tmp_out_path, removeHs=False)
+                    mols = [m for m in suppl if m is not None]
+                    if mols:
+                        ref_mol = mols[0]
+                        ref_mol = Chem.AddHs(ref_mol)
+                        ligands_to_dock.append((f"{ligand_resname}_Redocking", ref_mol))
+                        
+                        # Save reference PDBQT for visualization
+                        tmp_pdbqt = tmp_in_path.replace(".pdb", ".pdbqt")
+                        cmd2 = ["obabel", "-ipdb", tmp_in_path, "-opdbqt", "-O", tmp_pdbqt, "-h", "--partialcharge", "gasteiger"]
+                        subprocess.run(cmd2, capture_output=True)
+                        if os.path.exists(tmp_pdbqt):
+                            with open(tmp_pdbqt, 'r') as f:
+                                st.session_state['reference_pdbqt'] = f.read()
+                            os.unlink(tmp_pdbqt)
+                            show_ref = st.checkbox("Mostrar Ligante Original (Referência) no Resultado", value=True)
+                            st.session_state['show_ref'] = show_ref
+                        
+                        st.success(f"Ligante {ligand_resname} ({ref_mol.GetNumHeavyAtoms()} átomos pesados) extraído com sucesso! Será usado como entrada.")
+                        
+                        # Converter e disponibilizar botão para download em .mol2 (Inibidor Isolado original)
+                        tmp_mol2 = tmp_in_path.replace(".pdb", ".mol2")
+                        cmd3 = ["obabel", "-ipdb", tmp_in_path, "-omol2", "-O", tmp_mol2, "-h", "--partialcharge", "gasteiger"]
+                        subprocess.run(cmd3, capture_output=True)
+                        if os.path.exists(tmp_mol2):
+                            with open(tmp_mol2, 'rb') as f:
+                                st.download_button(
+                                    label=f"⬇️ Baixar Inibidor Isolado Original ({ligand_resname}) em .mol2",
+                                    data=f.read(),
+                                    file_name=f"{ligand_resname}_isolado.mol2",
+                                    mime="chemical/x-mol2",
+                                    key=f"dl_mol2_{ligand_resname}"
+                                )
+                            os.unlink(tmp_mol2)
+                    else:
+                        st.error("RDKit não conseguiu interpretar o ligante extraído como um arquivo SDF (falha na reconstrução das ligações). Tente carregar o SDF manualmente.")
+                    
+                    try:
+                        os.unlink(tmp_out_path)
+                    except: pass
+                else:
+                    st.error("Falha no OpenBabel ao tentar converter o resíduo do ligante para SDF. Verifique se o código do resíduo e a estrutura estão corretos.")
+                
+                try:
+                    os.unlink(tmp_in_path)
+                except: pass
+        else:
+            st.warning("Digite o código de 3 letras do resíduo do ligante.")
+    else:
+        st.warning("Por favor, carregue o arquivo da Proteína (Receptor) na Etapa 1.")
+
 st.write(f"Ligantes carregados: {len(ligands_to_dock)}")
 
+with st.expander("⚙️ Opções Avançadas de Preparação do Ligante"):
+    st.markdown("Estas opções afetam o preparo estrutural antes de enviar o ligante ao motor de docking. Ideais se o seu PDB original tiver ligantes com resoluções ruins ou distorções geográficas.")
+    opt_minimize = st.checkbox("Minimizar Geometria 3D (MMFF94)", value=False, help="MUITO ÚTIL PARA REDOCKING: Relaxa a geometria do cristal e normaliza o tamanho das ligações químicas e ângulos. Se o seu re-docking ficou com anéis muito torcidos (clashes) ou longes, assinalar esta opção pode consertar (o AutoDock Vina exige geometrias idealizadas pois seu campo de força não ajusta comprimento de ligações).")
+    
 # ------------------------------------------------------------------------------
 # STEP 3: RUN DOCKING
 # ------------------------------------------------------------------------------
@@ -473,6 +575,32 @@ if st.button("Iniciar"):
                         AllChem.UFFOptimizeMolecule(mol)
                     except:
                         pass
+                    
+                    # Centrar ligante recém gerado (proveniente de SMILES) na caixa,
+                    # caso contrário o Vina pode dar crash (Abort) se origin=0 e a caixa estiver longe.
+                    import numpy as np
+                    try:
+                        conf = mol.GetConformer()
+                        coords = conf.GetPositions()
+                        centroid = coords.mean(axis=0)
+                        dx = center_x - centroid[0]
+                        dy = center_y - centroid[1]
+                        dz = center_z - centroid[2]
+                        from rdkit.Geometry import Point3D
+                        for k in range(mol.GetNumAtoms()):
+                            p = conf.GetAtomPosition(k)
+                            conf.SetAtomPosition(k, Point3D(p.x + dx, p.y + dy, p.z + dz))
+                    except:
+                        pass
+                # Opcional: Minimizar um ligante que já tem 3D (PDB original ou SDF)
+                if opt_minimize and not needs_3d:
+                    try:
+                        AllChem.MMFFOptimizeMolecule(mol)
+                    except:
+                        try:
+                            AllChem.UFFOptimizeMolecule(mol)
+                        except:
+                            pass
                 
                 # 2. Convert Mol to PDBQT String using Meeko
                 meeko_prep = MoleculePreparation()
@@ -488,6 +616,22 @@ if st.button("Iniciar"):
                     affinity = 0.0
                     all_poses_pdbqt = lig_pdbqt
                 else:
+                    # PREVENÇÃO DE CRASH: Verificar se as coordenadas do ligante não estão fora 
+                    # da caixa de grid do Vina (o que causa C++ Assertion failed e aborta a aplicação inteira)
+                    import numpy as np
+                    conf = mol.GetConformer()
+                    coords = conf.GetPositions()
+                    c_min, c_max = coords.min(axis=0), coords.max(axis=0)
+                    b_min = np.array([center_x - size_x/2.0, center_y - size_y/2.0, center_z - size_z/2.0])
+                    b_max = np.array([center_x + size_x/2.0, center_y + size_y/2.0, center_z + size_z/2.0])
+                    
+                    # Utilizando uma margem tolerante ampla (15A) para evitar crashes do sistema C++ do Vina,
+                    # e ainda permitindo o redocking nativo onde a caixa pode ser relativamente pequena.
+                    if np.any(c_min < b_min - 15.0) or np.any(c_max > b_max + 15.0):
+                        st.error(f"⚠️ O ligante '{lig_name}' excede os limites da Caixa do Grid de forma muito crítica (>15A)! O docking foi abortado para este ligante para evitar que a aplicação congele e feche.")
+                        st.warning("DICA: Se você estiver fazendo Redocking de um PDB, certifique-se de configurar ou recalcular as coordenadas Centro/Tamanho ideais no menu lateral.")
+                        continue
+                        
                     # 4. Docking
                     v.set_ligand_from_string(lig_pdbqt)
                     v.dock(exhaustiveness=exhaustiveness, n_poses=num_modes)
@@ -507,6 +651,31 @@ if st.button("Iniciar"):
                         all_poses_pdbqt = f.read()
                     
                     os.unlink(t_out_name)
+                    
+                rmsd_calc = "-"
+                if "_Redocking" in lig_name and docking_method != "Análise 2D (Somente PLIP, sem Docking)":
+                    try:
+                        # Calculando RMSD com a pose nativa original (usando OpenBabel)
+                        with tempfile.NamedTemporaryFile(suffix=".sdf", delete=False) as t_ref:
+                            w = Chem.SDWriter(t_ref.name)
+                            w.write(mol)
+                            w.close()
+                            ref_sdf_path = t_ref.name
+                        
+                        with tempfile.NamedTemporaryFile(suffix=".pdbqt", mode="w", delete=False) as t_pose:
+                            t_pose.write(all_poses_pdbqt)
+                            t_pose_path = t_pose.name
+                        
+                        result_rmsd = subprocess.run(["obrms", "-f", ref_sdf_path, t_pose_path], capture_output=True, text=True)
+                        for line in result_rmsd.stdout.splitlines():
+                            if "RMSD" in line:
+                                rmsd_calc = round(float(line.split()[-1]), 3)
+                                break
+                        
+                        os.unlink(ref_sdf_path)
+                        os.unlink(t_pose_path)
+                    except Exception as e:
+                        pass
                 
                 heavy_atoms = mol.GetNumHeavyAtoms()
                 ligand_efficiency = abs(affinity) / heavy_atoms if heavy_atoms > 0 else 0.0
@@ -514,6 +683,7 @@ if st.button("Iniciar"):
                 results_list.append({
                     "Ligand": lig_name,
                     "Affinity (kcal/mol)": affinity,
+                    "RMSD ref. (Å)": rmsd_calc,
                     "Atómos Pesados": heavy_atoms,
                     "Ligand Efficiency": round(ligand_efficiency, 3),
                     "PDBQT": all_poses_pdbqt
@@ -555,7 +725,13 @@ if st.session_state.get('docking_results'):
     st.subheader("Tabela de Resultados")
     df_results = pd.DataFrame(results_list)
     if not df_results.empty:
-        cols_to_show = ["Ligand", "Affinity (kcal/mol)", "Atómos Pesados", "Ligand Efficiency"]
+        cols_to_show = ["Ligand", "Affinity (kcal/mol)", "RMSD ref. (Å)", "Atómos Pesados", "Ligand Efficiency"]
+        
+        if "RMSD ref. (Å)" not in df_results.columns:
+            cols_to_show.remove("RMSD ref. (Å)")
+        elif all(val == "-" or pd.isna(val) for val in df_results["RMSD ref. (Å)"]):
+            cols_to_show.remove("RMSD ref. (Å)")
+            
         st.dataframe(df_results[cols_to_show])
         
         # Download Results CSV
@@ -607,6 +783,11 @@ if st.session_state.get('docking_results'):
             
             view_res.addModel(ligand_pdbqt, 'pdbqt')
             view_res.setStyle({'model': -1}, {'stick': {'colorscheme': 'greenCarbon'}})
+            
+            if st.session_state.get('reference_pdbqt') and st.session_state.get('show_ref', False) and "_Redocking" in selected_ligand:
+                view_res.addModel(st.session_state['reference_pdbqt'], 'pdbqt')
+                view_res.setStyle({'model': -1}, {'stick': {'colorscheme': 'cyanCarbon'}})
+                st.info("O ligante em ciano representa a estrutura co-cristalizada original (Referência).")
             
             view_res.addBox({
                 'center': {'x': cached_box['center_x'], 'y': cached_box['center_y'], 'z': cached_box['center_z']},
