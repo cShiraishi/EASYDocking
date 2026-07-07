@@ -6,8 +6,37 @@ import io
 from io import StringIO
 import sys
 import subprocess
+import shutil
 import zipfile
 import requests
+
+
+def resolve_babel_bin(name):
+    """Resolve o caminho de um executável do OpenBabel (obabel/obrms).
+
+    Procura primeiro no PATH; se não achar (comum quando o Streamlit roda sob
+    o Anaconda sem o /opt/homebrew/bin no PATH), tenta locais de instalação
+    conhecidos (Homebrew Apple Silicon/Intel, conda, Linux). Retorna o nome
+    original como último recurso para preservar a mensagem de erro padrão.
+    """
+    found = shutil.which(name)
+    if found:
+        return found
+    candidates = [
+        f"/opt/homebrew/bin/{name}",          # Homebrew (Apple Silicon)
+        f"/usr/local/bin/{name}",             # Homebrew (Intel) / Linux
+        os.path.join(os.path.dirname(sys.executable), name),  # conda env
+        f"/usr/bin/{name}",
+    ]
+    for path in candidates:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return name
+
+
+# Executáveis do OpenBabel resolvidos uma vez na inicialização
+OBABEL = resolve_babel_bin("obabel")
+OBRMS = resolve_babel_bin("obrms")
 
 # Patch for meeko/rdkit compatibility (rdkit.six removed in new versions)
 try:
@@ -271,7 +300,7 @@ def convert_pdb_to_pdbqt(pdb_content):
         # 2. Construct OpenBabel command
         # obabel -ipdb input.pdb -opdbqt -O output.pdbqt -xr -h --partialcharge gasteiger
         cmd = [
-            "obabel",
+            OBABEL,
             "-ipdb", input_file.name,
             "-opdbqt", "-O", output_filename,
             "-xr",                  # Rigid receptor
@@ -460,7 +489,7 @@ elif input_method == "Redocking (Extrair do PDB)":
                     tmp_in_path = tmp_in.name
                     
                 tmp_out_path = tmp_in_path.replace(".pdb", ".sdf")
-                cmd = ["obabel", "-ipdb", tmp_in_path, "-osdf", "-O", tmp_out_path, "-h"]
+                cmd = [OBABEL, "-ipdb", tmp_in_path, "-osdf", "-O", tmp_out_path, "-h"]
                 subprocess.run(cmd, capture_output=True)
                 
                 if os.path.exists(tmp_out_path):
@@ -473,7 +502,7 @@ elif input_method == "Redocking (Extrair do PDB)":
                         
                         # Save reference PDBQT for visualization
                         tmp_pdbqt = tmp_in_path.replace(".pdb", ".pdbqt")
-                        cmd2 = ["obabel", "-ipdb", tmp_in_path, "-opdbqt", "-O", tmp_pdbqt, "-h", "--partialcharge", "gasteiger"]
+                        cmd2 = [OBABEL, "-ipdb", tmp_in_path, "-opdbqt", "-O", tmp_pdbqt, "-h", "--partialcharge", "gasteiger"]
                         subprocess.run(cmd2, capture_output=True)
                         if os.path.exists(tmp_pdbqt):
                             with open(tmp_pdbqt, 'r') as f:
@@ -486,7 +515,7 @@ elif input_method == "Redocking (Extrair do PDB)":
                         
                         # Converter e disponibilizar botão para download em .mol2 (Inibidor Isolado original)
                         tmp_mol2 = tmp_in_path.replace(".pdb", ".mol2")
-                        cmd3 = ["obabel", "-ipdb", tmp_in_path, "-omol2", "-O", tmp_mol2, "-h", "--partialcharge", "gasteiger"]
+                        cmd3 = [OBABEL, "-ipdb", tmp_in_path, "-omol2", "-O", tmp_mol2, "-h", "--partialcharge", "gasteiger"]
                         subprocess.run(cmd3, capture_output=True)
                         if os.path.exists(tmp_mol2):
                             with open(tmp_mol2, 'rb') as f:
@@ -666,7 +695,7 @@ if st.button("Iniciar"):
                             t_pose.write(all_poses_pdbqt)
                             t_pose_path = t_pose.name
                         
-                        result_rmsd = subprocess.run(["obrms", "-f", ref_sdf_path, t_pose_path], capture_output=True, text=True)
+                        result_rmsd = subprocess.run([OBRMS, "-f", ref_sdf_path, t_pose_path], capture_output=True, text=True)
                         for line in result_rmsd.stdout.splitlines():
                             if "RMSD" in line:
                                 rmsd_calc = round(float(line.split()[-1]), 3)
