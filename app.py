@@ -435,7 +435,7 @@ else:
 # STEP 2: LIGAND INPUT
 # ------------------------------------------------------------------------------
 st.header("2. Entrada de Ligantes")
-input_method = st.radio("Método de Entrada:", ["Lista de SMILES", "Arquivo SDF", "Redocking (Extrair do PDB)"])
+input_method = st.radio("Método de Entrada:", ["Lista de SMILES", "Planilha (CSV/Excel)", "Arquivo SDF", "Redocking (Extrair do PDB)"])
 
 ligands_to_dock = []  # List of (name, mol_object)
 
@@ -452,6 +452,55 @@ if input_method == "Lista de SMILES":
             if mol:
                 mol = Chem.AddHs(mol)
                 ligands_to_dock.append((name, mol))
+
+elif input_method == "Planilha (CSV/Excel)":
+    st.caption("Envie uma planilha com uma coluna de SMILES (e opcionalmente uma coluna de nomes). Formatos aceitos: .csv, .xlsx, .xls")
+    sheet_file = st.file_uploader("Carregar planilha", type=["csv", "xlsx", "xls"])
+    if sheet_file is not None:
+        try:
+            if sheet_file.name.lower().endswith(".csv"):
+                df_lig = pd.read_csv(sheet_file)
+            else:
+                df_lig = pd.read_excel(sheet_file)  # requer openpyxl (.xlsx) / xlrd (.xls)
+        except Exception as e:
+            df_lig = None
+            st.error(f"Falha ao ler a planilha: {e}")
+
+        if df_lig is not None and not df_lig.empty:
+            cols = list(df_lig.columns.astype(str))
+            # Tenta adivinhar automaticamente a coluna de SMILES pelo nome
+            smi_guess = next((c for c in cols if c.strip().lower() in ("smiles", "smile", "canonical_smiles", "smi")), cols[0])
+            col_s1, col_s2 = st.columns(2)
+            with col_s1:
+                smiles_col = st.selectbox("Coluna de SMILES", cols, index=cols.index(smi_guess))
+            with col_s2:
+                name_options = ["(gerar automaticamente)"] + cols
+                name_guess = next((c for c in cols if c.strip().lower() in ("name", "nome", "id", "molecule", "mol_name", "title")), None)
+                name_idx = name_options.index(name_guess) if name_guess in name_options else 0
+                name_col = st.selectbox("Coluna de Nome (opcional)", name_options, index=name_idx)
+
+            st.dataframe(df_lig.head(10), use_container_width=True)
+
+            n_ok, n_fail = 0, 0
+            for i, r in df_lig.iterrows():
+                smi = str(r[smiles_col]).strip()
+                if not smi or smi.lower() in ("nan", "none", ""):
+                    continue
+                if name_col != "(gerar automaticamente)":
+                    raw_name = str(r[name_col]).strip()
+                    name = raw_name if raw_name and raw_name.lower() != "nan" else f"Ligand_{i+1}"
+                else:
+                    name = f"Ligand_{i+1}"
+                mol = Chem.MolFromSmiles(smi)
+                if mol:
+                    mol = Chem.AddHs(mol)
+                    ligands_to_dock.append((name, mol))
+                    n_ok += 1
+                else:
+                    n_fail += 1
+            st.success(f"{n_ok} ligante(s) válido(s) lido(s) da planilha.")
+            if n_fail:
+                st.warning(f"{n_fail} linha(s) com SMILES inválido foram ignoradas.")
 
 elif input_method == "Arquivo SDF":
     sdf_file = st.file_uploader("Carregar arquivo .sdf", type=["sdf"])
