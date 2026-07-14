@@ -1,3 +1,4 @@
+openbabel
 libxrender1
 libxext6
 build-essential
